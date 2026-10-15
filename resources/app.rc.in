@@ -1,0 +1,2 @@
+// Native executable icon. Keep the supplied ICO unchanged, including all sizes.
+1 ICON "@VENOR_ICON_FILE@"
