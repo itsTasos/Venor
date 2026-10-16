@@ -48,9 +48,12 @@ void MainWindow::setupAi(QMenu *investigate, QMenu *settings) {
             return;
         }
         bool rename = suggestion.kind == "function_name";
+        const auto *recovered = decompiler ? decompiler->containing(suggestion.address) : nullptr;
+        bool knownRecovered = recovered && recovered->entry == suggestion.address;
         if (rename && (liveCode || evidenceCode || !image ||
-                       std::none_of(image->functions.begin(), image->functions.end(),
-                                    [&](const Row &r) { return r.address == suggestion.address; }))) {
+                       (!knownRecovered &&
+                        std::none_of(image->functions.begin(), image->functions.end(),
+                                     [&](const Row &r) { return r.address == suggestion.address; })))) {
             error("Only known static function candidates can be renamed. Runtime variable/name suggestions "
                   "can be saved as comments.");
             return;
@@ -97,6 +100,8 @@ QByteArray MainWindow::aiSourceIdentity() const {
     QByteArray raw;
     QDataStream stream(&raw, QIODevice::WriteOnly);
     stream << (image ? image->hash : QString()) << liveCode << evidenceCode;
+    if (decompiled)
+        stream << decompiled->entry << decompiled->code << QJsonDocument(analysisEdits()).toJson();
     if (evidenceCode && displayedEvidence)
         stream << displayedEvidence->time << displayedEvidence->ip << displayedEvidence->thread
                << displayedEvidence->code << displayedEvidence->registers;
@@ -120,6 +125,38 @@ AiContext MainWindow::aiContext(AiScope scope, bool runtime) const {
                 event = &*it;
                 break;
             }
+    }
+    QString mappingReason;
+    auto preferred = staticSelection(&mappingReason);
+    const auto *function = preferred && decompiler ? decompiler->containing(*preferred) : nullptr;
+    if (decompiled && function && decompiled->entry == function->entry &&
+        decompiled->edits == analysisEdits()) {
+        Snapshot mappedSnapshot;
+        Event mappedEvent;
+        if (snapshot) {
+            mappedSnapshot = *snapshot;
+            mappedSnapshot.ip = image->base + snapshot->ip - (work.selected - (*preferred - image->base));
+            snapshot = &mappedSnapshot;
+        }
+        if (event && !evidenceCode) {
+            mappedEvent = *event;
+            mappedEvent.ip = snapshot ? snapshot->ip : event->ip;
+            event = &mappedEvent;
+        }
+        auto context = makeAiContext(image.get(), decompiled->instructions, *preferred, scope,
+                                     liveCode ? "Ghidra static reconstruction; only the captured live byte "
+                                                "window was compared with the file"
+                                              : "Static file and Ghidra reconstruction",
+                                     snapshot, event, &*decompiled);
+        if (liveCode)
+            context.data["runtime_address_mapping"] = QJsonObject{
+                {"selected_runtime_va", hex(work.selected)},
+                {"preferred_file_va", hex(*preferred)},
+                {"binary_sha256", image->hash},
+                {"coverage",
+                 "Only captured instruction bytes compared. Unobserved code remains a static assumption; "
+                 "absolute relocated operands are conservatively rejected if different."}};
+        return context;
     }
     return makeAiContext(!liveCode && !evidenceCode ? image.get() : nullptr, selectedFunction(),
                          work.selected, scope,

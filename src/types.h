@@ -73,6 +73,7 @@ struct Workspace {
     quint64 selected = 0;
     QByteArray layout, geometry;
     QMap<quint64, QString> comments, renames, bookmarks;
+    QJsonArray decompilerEdits;
     QVector<Breakpoint> breakpoints;
     QVector<Event> events;
     QVector<quint64> trail;

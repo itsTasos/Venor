@@ -404,6 +404,7 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
     navView->setColumnWidth(0, 160);
     navView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     navView->setObjectName("navigator");
+    navView->installEventFilter(this);
     auto *explorer = new QWidget;
     auto *el = new QVBoxLayout(explorer);
     el->setContentsMargins(6, 6, 6, 6);
@@ -630,6 +631,7 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
     auto *settingsMenu = new QMenu("&Settings", this);
     menuBar()->insertMenu(help->menuAction(), settingsMenu);
     setupAi(investigate, settingsMenu);
+    setupDecompiler(investigate, settingsMenu);
     for (auto *d : docks)
         view->addAction(d->toggleViewAction());
     view->addSeparator();
@@ -648,6 +650,8 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
             flowView->scale(1.2, 1.2);
         else if (center->currentIndex() == 2)
             readable->zoomIn();
+        else if (center->currentIndex() == 4)
+            pseudocode->zoomIn();
         else {
             codeModel->fontPointSize = std::min(22, codeModel->fontPointSize + 1);
             auto font = mono();
@@ -662,6 +666,8 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
             flowView->scale(1 / 1.2, 1 / 1.2);
         else if (center->currentIndex() == 2)
             readable->zoomOut();
+        else if (center->currentIndex() == 4)
+            pseudocode->zoomOut();
         else {
             codeModel->fontPointSize = std::max(8, codeModel->fontPointSize - 1);
             auto font = mono();
@@ -733,6 +739,7 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
                 pendingWorkspace.reset();
             }
             image = loaded;
+            openDecompiler();
             meaningKey.clear();
             displayedEvidence.reset();
             liveCode = false;
@@ -751,7 +758,7 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
             }
             codeModel->reset(image->code);
             pages->setCurrentIndex(1);
-            center->setCurrentIndex(2);
+            center->setCurrentIndex(GhidraConfig::load().error().isEmpty() ? 4 : 2);
             refreshNavigation();
             refreshBreakpoints();
             refreshTimeline();
@@ -765,6 +772,13 @@ MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
                     restoreGeometry(work.geometry);
             }
             navigate(work.selected ? work.selected : image->entry);
+            compactDecompilerLayout =
+                restoring ? registerDock->isHidden() : GhidraConfig::load().error().isEmpty();
+            if (compactDecompilerLayout)
+                QTimer::singleShot(0, this, [this] {
+                    if (compactDecompilerLayout && !debugger.isRunning())
+                        setDebuggerPanesVisible(false);
+                });
             restoring = false;
             dirty = false;
             setWindowModified(false);
@@ -848,7 +862,8 @@ void MainWindow::chooseInvestigation() {
         openInvestigation(p);
 }
 void MainWindow::openBinary(const QString &path, bool restore) {
-    if (aiPanel) aiPanel->sourceChanged(QUuid::createUuid().toByteArray());
+    if (aiPanel)
+        aiPanel->sourceChanged(QUuid::createUuid().toByteArray());
     if (loading) {
         statusBar()->showMessage("Wait for analysis to finish or cancel it.");
         return;
@@ -860,6 +875,10 @@ void MainWindow::openBinary(const QString &path, bool restore) {
     if (!restore && !confirmDiscard())
         return;
     restoring = restore;
+    if (decompiler)
+        decompiler->close();
+    decompiled.reset();
+    requestedDecompilation.clear();
     loading = true;
     pages->setEnabled(false);
     notes->setEnabled(false);
@@ -893,7 +912,8 @@ void MainWindow::openInvestigation(const QString &path) {
         return;
     try {
         auto loaded = loadWorkspace(path);
-        if (aiPanel) aiPanel->sourceChanged(QUuid::createUuid().toByteArray());
+        if (aiPanel)
+            aiPanel->sourceChanged(QUuid::createUuid().toByteArray());
         if (loaded.binary.isEmpty() && loaded.hash.isEmpty()) {
             work = std::move(loaded);
             workspacePath = path;
@@ -1026,6 +1046,11 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     codeView->setColumnHidden(2, center->width() < 700);
     codeView->setColumnHidden(4, center->width() < 1000);
 }
+bool MainWindow::eventFilter(QObject *object, QEvent *event) {
+    if (object == navView && event->type() == QEvent::Resize)
+        navView->setColumnHidden(0, navView->width() < 340);
+    return QMainWindow::eventFilter(object, event);
+}
 void MainWindow::updateRecents(QString path) {
     QSettings s;
     auto paths = s.value("recents").toStringList();
@@ -1056,6 +1081,11 @@ void MainWindow::refreshNavigation() {
         switch (navKind->currentIndex()) {
         case 0:
             rows = image->functions;
+            if (decompiler && !decompiler->functions().isEmpty()) {
+                rows.clear();
+                for (const auto &f : decompiler->functions())
+                    rows << Row{f.entry, f.name, f.signature + " · Ghidra recovered"};
+            }
             for (auto &r : rows)
                 if (work.renames.contains(r.address))
                     r.name = work.renames[r.address];
@@ -1099,6 +1129,23 @@ void MainWindow::refreshNavigation() {
         case 8:
             for (auto a : image->xrefs.values(work.selected))
                 rows << Row{a, "Reference to " + hex(work.selected), "Decoded relative operand"};
+            if (decompiled) {
+                rows.clear();
+                for (auto value : decompiled->data["callers"].toArray()) {
+                    auto ref = value.toObject();
+                    auto from = ref["from"].toString().mid(2).toULongLong(nullptr, 16);
+                    rows << Row{relocateStatic(from), "Incoming " + ref["kind"].toString(),
+                                "Ghidra reference to " + hex(decompiled->entry)};
+                }
+                for (auto value : decompiled->data["references"].toArray()) {
+                    auto ref = value.toObject();
+                    auto to = ref["to"].toString().mid(2).toULongLong(nullptr, 16);
+                    if (!to)
+                        to = ref["from"].toString().mid(2).toULongLong(nullptr, 16);
+                    rows << Row{relocateStatic(to), ref["name"].toString(),
+                                "Ghidra " + ref["kind"].toString() + " from " + ref["from"].toString()};
+                }
+            }
             break;
         }
     }
@@ -1195,6 +1242,17 @@ void MainWindow::selectInstruction(const QModelIndex &i) {
     explain(instruction);
 }
 QVector<Instruction> MainWindow::selectedFunction() const {
+    if (decompiled && !liveCode && !evidenceCode && decompiler) {
+        auto *f = decompiler->containing(work.selected);
+        if (f && f->entry == decompiled->entry && decompiled->edits == analysisEdits()) {
+            const auto &instructions = decompiled->instructions;
+            if (instructions.size() <= 1200)
+                return instructions;
+            auto at = std::lower_bound(instructions.begin(), instructions.end(), work.selected,
+                                       [](const auto &i, quint64 a) { return i.address < a; });
+            return instructions.mid(std::max(0, int(at - instructions.begin()) - 200), 512);
+        }
+    }
     auto &code = codeModel->code;
     if (code.isEmpty())
         return {};
@@ -1291,7 +1349,9 @@ void MainWindow::updateSessionInfo() {
     stateLabel->setToolTip(text);
 }
 void MainWindow::explain(const Instruction &i) {
-    if (aiPanel) aiPanel->sourceChanged(aiSourceIdentity());
+    updateDecompilerSelection();
+    if (aiPanel)
+        aiPanel->sourceChanged(aiSourceIdentity());
     auto code = selectedFunction();
     QByteArray key = QByteArray::number(code.isEmpty() ? 0 : code.first().address);
     key += liveCode ? "live" : evidenceCode ? "saved" : "file";
@@ -1404,11 +1464,26 @@ void MainWindow::explain(const Instruction &i) {
         text +=
             "<h4>Window bounds</h4><p>" + blockSummary(code).toHtmlEscaped().replace('\n', "<br>") + "</p>";
     }
+    if (decompiled) {
+        text += "<h4>Recovered function</h4><p><b>" + decompiled->signature.toHtmlEscaped() +
+                "</b></p><p>Ghidra static reconstruction. Parameter and return types are inferred, not "
+                "runtime values.</p>";
+        for (auto variable : decompiled->data["variables"].toArray()) {
+            auto v = variable.toObject();
+            if (!v["parameter"].toBool())
+                continue;
+            text += "<p><code>" + v["type"].toString().toHtmlEscaped() + " " +
+                    v["name"].toString().toHtmlEscaped() + "</code> · " +
+                    v["storage"].toString().toHtmlEscaped() + "</p>";
+        }
+        text += "<p>Return type: " + decompiled->data["return_type"].toString().toHtmlEscaped() + "</p>";
+    }
     inspector->setHtml(text);
     int oldScroll = readable->verticalScrollBar()->value();
-    QString html = "<h2>Meaning</h2><p>" + source.toHtmlEscaped() +
-                   " · up to 160 instructions / 4 KiB. Local derivations, not source-code decompilation or "
-                   "proof of execution.</p>";
+    QString html =
+        "<h2>Meaning</h2><p>" + source.toHtmlEscaped() + " · " + QString::number(code.size()) +
+        " decoded instructions in this analysis window. Local derivations, not source-code decompilation or "
+        "proof of execution.</p>";
     for (int n = 0; n < meaning.units.size(); ++n) {
         const auto &unit = meaning.units[n];
         auto at = meaning.steps[unit.steps.first()].address;
@@ -1470,8 +1545,25 @@ void MainWindow::graph(const QVector<Instruction> &code) {
     QSet<quint64> addresses;
     for (auto &i : code)
         addresses.insert(i.address);
+    QMap<quint64, QVector<quint64>> recoveredSuccessors;
+    bool recoveredFlow =
+        decompiled && !liveCode && !evidenceCode && code.size() == decompiled->instructions.size();
+    if (recoveredFlow) {
+        for (auto value : decompiled->data["blocks"].toArray()) {
+            auto block = value.toObject();
+            auto start = block["start"].toString().mid(2).toULongLong(nullptr, 16);
+            if (!addresses.contains(start))
+                continue;
+            leaders.insert(start);
+            auto &successors = recoveredSuccessors[start];
+            for (auto target : block["successors"].toArray())
+                successors << target.toString().mid(2).toULongLong(nullptr, 16);
+        }
+    }
     for (int n = 0; n < code.size(); n++) {
         auto &i = code[n];
+        if (n && code[n - 1].address + quint64(code[n - 1].size) != i.address)
+            leaders.insert(i.address);
         if (i.branch && i.target && addresses.contains(i.target))
             leaders.insert(i.target);
         if ((i.branch || i.terminal) && n + 1 < code.size())
@@ -1487,6 +1579,21 @@ void MainWindow::graph(const QVector<Instruction> &code) {
         owner[i.address] = blocks.last().first().address;
     }
     qreal y = 28;
+    if (recoveredFlow) {
+        auto *notice = flowScene->addText("Ghidra recovered control flow · static edges within this function "
+                                          "view; execution is unobserved");
+        notice->setDefaultTextColor(palette().color(QPalette::Text));
+        notice->setTextWidth(580);
+        y = notice->boundingRect().height() + 40;
+    }
+    if (decompiled && decompiled->instructions.size() > code.size()) {
+        auto *notice =
+            flowScene->addText("Large recovered function: this graph displays a bounded instruction window "
+                               "around the selection. Full reconstruction is in Decompiled Code.");
+        notice->setDefaultTextColor(palette().color(QPalette::Text));
+        notice->setTextWidth(580);
+        y = notice->boundingRect().height() + 40;
+    }
     for (auto &block : blocks) {
         QString text = hex(block.first().address) + "\n";
         auto unit = meaning.unitAt.value(block.first().address, -1);
@@ -1521,10 +1628,21 @@ void MainWindow::graph(const QVector<Instruction> &code) {
         auto &last = block.last();
         auto *from = items[block.first().address];
         QVector<QPair<quint64, QColor>> targets;
-        if (last.branch && last.target && !last.text.contains('['))
-            targets << qMakePair(last.target, QColor("#6dba9b"));
-        if (!last.terminal)
-            targets << qMakePair(last.address + last.size, QColor("#7aa8d3"));
+        if (recoveredSuccessors.contains(block.first().address)) {
+            for (auto destination : recoveredSuccessors[block.first().address]) {
+                // Calls are cross-references, not intraprocedural branch edges.
+                if (last.call && destination != last.address + quint64(last.size))
+                    continue;
+                targets << qMakePair(destination, destination == last.address + quint64(last.size)
+                                                      ? QColor("#7aa8d3")
+                                                      : QColor("#6dba9b"));
+            }
+        } else {
+            if (last.branch && last.target && !last.text.contains('['))
+                targets << qMakePair(last.target, QColor("#6dba9b"));
+            if (!last.terminal)
+                targets << qMakePair(last.address + last.size, QColor("#7aa8d3"));
+        }
         for (auto &edge : targets) {
             if (!owner.contains(edge.first))
                 continue;
@@ -1560,6 +1678,12 @@ void MainWindow::goExpression(QString expr) {
         return;
     }
     if (image) {
+        if (decompiler)
+            for (const auto &function : decompiler->functions())
+                if (function.name.compare(expr, Qt::CaseInsensitive) == 0) {
+                    navigate(relocateStatic(function.entry));
+                    return;
+                }
         for (auto rows : {image->functions, image->imports, image->exports})
             for (auto &r : rows)
                 if (r.name.compare(expr, Qt::CaseInsensitive) == 0 ||
@@ -2065,6 +2189,11 @@ void MainWindow::attach() {
     }
 }
 void MainWindow::debuggerState(Debugger::State state, QString detail) {
+    if (compactDecompilerLayout && state == Debugger::State::Starting)
+        setDebuggerPanesVisible(true);
+    if (compactDecompilerLayout &&
+        (state == Debugger::State::Disconnected || state == Debugger::State::Exited))
+        setDebuggerPanesVisible(false);
     stateLabel->setToolTip(detail);
     bool paused = state == Debugger::State::Paused, running = state == Debugger::State::Running,
          connected = paused || running || state == Debugger::State::Starting;
@@ -2280,7 +2409,8 @@ void MainWindow::presetLayout(QString name) {
     }
     for (auto *d : docks)
         d->show();
-    if (aiDock) aiDock->hide();
+    if (aiDock)
+        aiDock->hide();
     registerDock->raise();
     resizeDocks({exploreDock, contextDock}, {name == "Beginner" ? 260 : 300, name == "Beginner" ? 400 : 360},
                 Qt::Horizontal);

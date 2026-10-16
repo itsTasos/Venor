@@ -9,18 +9,22 @@ static QRegularExpression sourceReferences() {
         "(?<![A-Za-z0-9_])(?:\\[(0[xX][0-9a-fA-F]{1,16})\\]|(0[xX][0-9a-fA-F]{1,16}))(?![A-Za-z0-9_])");
 }
 QByteArray AiContext::key() const {
-    return QCryptographicHash::hash(serialized() + "venor-explanation-v1", QCryptographicHash::Sha256);
+    return QCryptographicHash::hash(serialized() + "venor-explanation-v2", QCryptographicHash::Sha256);
 }
 AiContext makeAiContext(const Binary *binary, QVector<Instruction> code, quint64 selection, AiScope scope,
-                        QString provenance, const Snapshot *snapshot, const Event *event) {
+                        QString provenance, const Snapshot *snapshot, const Event *event,
+                        const DecompiledFunction *decompiled) {
     auto found =
         std::find_if(code.begin(), code.end(), [selection](const auto &i) { return i.address == selection; });
     if (found == code.end())
         throw std::runtime_error("Select a decoded instruction before requesting an explanation");
     int selected = int(found - code.begin());
-    if (scope == AiScope::Instruction)
-        code = {code[selected]};
-    else if (scope == AiScope::Block) {
+    int originalCount = code.size();
+    QVector<Instruction> full = code;
+    QSet<int> chosen;
+    QJsonArray blockGraph;
+    int selectedFirst = selected, selectedLast = selected;
+    {
         QSet<quint64> leaders;
         for (int n = 0; n < code.size(); ++n) {
             if (code[n].branch)
@@ -30,26 +34,63 @@ AiContext makeAiContext(const Binary *binary, QVector<Instruction> code, quint64
             if (n && code[n - 1].address + quint64(code[n - 1].size) != code[n].address)
                 leaders.insert(code[n].address);
         }
-        int first = selected, last = selected;
-        while (first > 0 && !leaders.contains(code[first].address))
-            --first;
-        while (last + 1 < code.size() && !code[last].branch && !code[last].terminal &&
-               !leaders.contains(code[last + 1].address))
-            ++last;
-        code = code.mid(first, last - first + 1);
+        leaders.insert(code.first().address);
+        while (selectedFirst > 0 && !leaders.contains(code[selectedFirst].address))
+            --selectedFirst;
+        while (selectedLast + 1 < code.size() && !code[selectedLast].branch && !code[selectedLast].terminal &&
+               !leaders.contains(code[selectedLast + 1].address))
+            ++selectedLast;
+        for (int n = 0; n < code.size();) {
+            int end = n;
+            while (end + 1 < code.size() && !code[end].branch && !code[end].terminal &&
+                   !leaders.contains(code[end + 1].address))
+                ++end;
+            QJsonArray successors;
+            if (code[end].branch && code[end].target)
+                successors << hex(code[end].target);
+            if (!code[end].terminal && end + 1 < code.size())
+                successors << hex(code[end + 1].address);
+            blockGraph << QJsonObject{{"start", hex(code[n].address)},
+                                      {"last_instruction", hex(code[end].address)},
+                                      {"successors", successors}};
+            n = end + 1;
+        }
     }
-    if (code.size() > 160)
-        code.resize(160);
+    if (scope == AiScope::Function && code.size() <= 256) {
+        for (int n = 0; n < code.size(); ++n)
+            chosen.insert(n);
+    } else {
+        for (int n = std::max(selectedFirst, selected - 96); n <= std::min(selectedLast, selected + 96); ++n)
+            chosen.insert(n);
+        for (int n = std::max(0, selectedFirst - 12);
+             n <= std::min(int(code.size()) - 1, selectedLast + 12) && chosen.size() < 224; ++n)
+            chosen.insert(n);
+        if (scope == AiScope::Function) {
+            for (int n = 0; n < std::min(16, int(code.size())); ++n)
+                chosen.insert(n);
+            for (int n = 0; n < code.size() && chosen.size() < 256; ++n)
+                if (code[n].call || code[n].branch || code[n].terminal)
+                    chosen.insert(n);
+        }
+    }
+    code.clear();
+    for (int n = 0; n < full.size(); ++n)
+        if (chosen.contains(n))
+            code << full[n];
     AiContext context;
     QJsonArray instructions, edges, metadata, functions;
     QMultiMap<quint64, quint64> referencedTargets;
     for (const auto &i : code) {
         context.addresses.insert(i.address);
-        instructions << QJsonObject{
-            {"address", hex(i.address)},  {"bytes", QString::fromLatin1(i.bytes.toHex(' '))},
-            {"assembly", i.text},         {"decoded", i.valid},
-            {"instruction_fact", i.fact}, {"local_deduction", i.derived},
-            {"unknown", i.unknown}};
+        instructions << QJsonObject{{"address", hex(i.address)},
+                                    {"bytes", QString::fromLatin1(i.bytes.toHex(' '))},
+                                    {"assembly", i.text},
+                                    {"decoded", i.valid},
+                                    {"instruction_fact", i.fact},
+                                    {"local_deduction", i.derived},
+                                    {"unknown", i.unknown},
+                                    {"reads", QJsonArray::fromStringList(i.reads)},
+                                    {"writes", QJsonArray::fromStringList(i.writes)}};
     }
     for (const auto &i : code) {
         if ((i.branch || i.call) && i.target)
@@ -83,16 +124,22 @@ AiContext makeAiContext(const Binary *binary, QVector<Instruction> code, quint64
                     {"provenance", "static function candidate, not proof of complete recovery"}};
                 context.functionStarts.insert(f.address);
             }
-    context.data = {{"schema", "venor.analysis-context.v1"},
+    context.data = {{"schema", "venor.analysis-context.v2"},
                     {"architecture", "Windows x64"},
                     {"scope", scope == AiScope::Instruction ? "instruction"
                               : scope == AiScope::Block     ? "basic block"
                                                             : "function window"},
                     {"selection", hex(selection)},
                     {"provenance", provenance},
-                    {"coverage",
-                     "Bounded selection, at most 160 instructions / 4 KiB. No complete function or "
-                     "decompiler output is available. Branches/calls are decoded, not necessarily executed."},
+                    {"coverage", decompiled
+                                     ? "Recovered function; Ghidra reconstruction and inferred types, not "
+                                       "original source. Static flow does not prove execution."
+                                     : "Fallback bounded assembly window; complete function recovery and "
+                                       "pseudocode are unavailable. Static flow does not prove execution."},
+                    {"containing_block", QJsonObject{{"start", hex(full[selectedFirst].address)},
+                                                     {"last_instruction", hex(full[selectedLast].address)}}},
+                    {"control_flow", blockGraph},
+                    {"omitted_instruction_count", originalCount - int(code.size())},
                     {"binary_sha256", binary ? binary->hash : QString()},
                     {"instructions", instructions},
                     {"decoded_edges", edges},
@@ -127,7 +174,7 @@ AiContext makeAiContext(const Binary *binary, QVector<Instruction> code, quint64
         registers = &snapshot->registers;
         ip = snapshot->ip;
     }
-    if (registers && context.addresses.contains(ip)) {
+    if (registers && selection == ip) {
         QJsonObject values;
         for (auto it = registers->begin(); it != registers->end(); ++it)
             values[it.key()] = hex(it.value());
@@ -154,8 +201,144 @@ AiContext makeAiContext(const Binary *binary, QVector<Instruction> code, quint64
         }
         context.data["observed_snapshot"] = observed;
     }
-    if (context.serialized().size() > 192 * 1024)
-        throw std::runtime_error("Selected context is too large; explain a smaller block");
+    if (decompiled) {
+        auto allVariables = decompiled->data["variables"].toArray();
+        QJsonArray variables, calls, callers, mappings, signatures;
+        for (int n = 0; n < std::min(256, int(allVariables.size())); ++n)
+            variables << allVariables[n];
+        int omittedReferences = 0;
+        for (auto value : decompiled->data["references"].toArray()) {
+            auto r = value.toObject();
+            if (calls.size() >= 128 ||
+                (scope != AiScope::Function &&
+                 !context.addresses.contains(r["from"].toString().mid(2).toULongLong(nullptr, 16)))) {
+                ++omittedReferences;
+                continue;
+            }
+            calls << r;
+            for (const auto &api : apiCatalog())
+                if (r["name"].toString().endsWith(api.symbol.section('!', -1), Qt::CaseInsensitive))
+                    signatures << QJsonObject{
+                        {"symbol", api.symbol},
+                        {"arguments", QJsonArray::fromStringList(api.args)},
+                        {"purpose", api.purpose},
+                        {"limitations", api.limits},
+                        {"provenance",
+                         "curated Windows API catalogue; calls are requests, not confirmed effects"}};
+        }
+        auto allCallers = decompiled->data["callers"].toArray();
+        for (int n = 0; n < std::min(64, int(allCallers.size())); ++n)
+            callers << allCallers[n];
+        int start = 0, length = std::min(49152, int(decompiled->code.size()));
+        if (decompiled->code.size() > length) {
+            for (auto value : decompiled->data["tokens"].toArray()) {
+                auto t = value.toObject();
+                if (t["address"].toString().mid(2).toULongLong(nullptr, 16) == selection) {
+                    start = std::clamp(t["start"].toInt() - 16384, 0, int(decompiled->code.size()) - length);
+                    break;
+                }
+            }
+        }
+        int omittedMappings = 0;
+        for (auto value : decompiled->data["tokens"].toArray()) {
+            auto t = value.toObject();
+            auto a = t["address"].toString().mid(2).toULongLong(nullptr, 16);
+            if (!a || t["start"].toInt() < start || t["start"].toInt() >= start + length)
+                continue;
+            if (mappings.size() >= 512) {
+                ++omittedMappings;
+                continue;
+            }
+            mappings << QJsonObject{
+                {"start_utf16", t["start"]}, {"length", t["length"]}, {"address", t["address"]}};
+            context.addresses.insert(a);
+        }
+        context.functionStarts.insert(decompiled->entry);
+        QJsonArray candidates = context.data["function_candidates"].toArray();
+        candidates << QJsonObject{{"address", hex(decompiled->entry)},
+                                  {"name", decompiled->name},
+                                  {"provenance", "Ghidra recovered function"}};
+        context.data["function_candidates"] = candidates;
+        context.data["decompilation"] = QJsonObject{
+            {"provenance",
+             "Ghidra static reconstruction; inferred names/types may be wrong; not original source"},
+            {"entry", hex(decompiled->entry)},
+            {"signature", decompiled->signature},
+            {"return_type", decompiled->data["return_type"]},
+            {"variables_and_parameters", variables},
+            {"omitted_variables", allVariables.size() - variables.size()},
+            {"warning", decompiled->data["warning"]},
+            {"analysis_warning", decompiled->data["analysis_warning"]},
+            {"pseudocode", decompiled->code.mid(start, length)},
+            {"pseudocode_start_utf16", start},
+            {"omitted_pseudocode_characters", decompiled->code.size() - length},
+            {"source_mappings", mappings},
+            {"omitted_source_mappings", omittedMappings},
+            {"references", calls},
+            {"omitted_references", omittedReferences},
+            {"callers", callers},
+            {"omitted_callers", allCallers.size() - callers.size()}};
+        context.data["known_api_signatures"] = signatures;
+        context.data["control_flow"] = decompiled->data["blocks"];
+    }
+    auto allBlocks = context.data["control_flow"].toArray();
+    if (allBlocks.size() > 256) {
+        int selectedBlock = 0;
+        for (int n = 0; n < allBlocks.size(); ++n) {
+            auto b = allBlocks[n].toObject();
+            auto start = b["start"].toString().mid(2).toULongLong(nullptr, 16);
+            if (start <= selection)
+                selectedBlock = n;
+        }
+        int begin = std::clamp(selectedBlock - 96, 0, int(allBlocks.size()) - 256);
+        QJsonArray retained;
+        for (int n = begin; n < begin + 256; ++n)
+            retained << allBlocks[n];
+        context.data["control_flow"] = retained;
+        context.data["omitted_block_count"] = allBlocks.size() - retained.size();
+    }
+    // Prioritize actual code and reconstruction over repeated prose when the byte budget is reached.
+    constexpr int budget = 192 * 1024;
+    if (context.serialized().size() > budget) {
+        context.data.remove("deterministic_interpretation");
+        context.data["omitted_deterministic_interpretation"] =
+            "Removed to retain instruction and pseudocode evidence within 192 KiB";
+        auto rows = context.data["instructions"].toArray();
+        for (int n = 0; n < rows.size(); ++n) {
+            auto r = rows[n].toObject();
+            r.remove("instruction_fact");
+            r.remove("local_deduction");
+            r.remove("unknown");
+            rows[n] = r;
+        }
+        context.data["instructions"] = rows;
+        context.data["omitted_instruction_prose"] = true;
+    }
+    if (context.serialized().size() > budget && context.data.contains("decompilation")) {
+        auto d = context.data["decompilation"].toObject();
+        for (const auto &pair :
+             {qMakePair(QString("references"), QString("omitted_references")),
+              qMakePair(QString("source_mappings"), QString("omitted_source_mappings")),
+              qMakePair(QString("variables_and_parameters"), QString("omitted_variables"))}) {
+            auto values = d[pair.first].toArray();
+            int retain = pair.first == "source_mappings" ? 128 : 32;
+            int removed = std::max(0, int(values.size()) - retain);
+            while (values.size() > retain)
+                values.removeLast();
+            d[pair.first] = values;
+            d[pair.second] = d[pair.second].toInt() + removed;
+        }
+        context.data["decompilation"] = d;
+        auto blocks = context.data["control_flow"].toArray();
+        int removed = std::max(0, int(blocks.size()) - 64);
+        while (blocks.size() > 64)
+            blocks.removeLast();
+        context.data["control_flow"] = blocks;
+        context.data["omitted_block_count"] = context.data["omitted_block_count"].toInt() + removed;
+    }
+    if (context.serialized().size() > budget)
+        throw std::runtime_error(
+            "Recovered metadata exceeds the 192 KiB consent budget. Explain a smaller block or instruction.");
     return context;
 }
 QString visibleAiText(QString text) {

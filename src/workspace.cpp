@@ -67,6 +67,7 @@ static QJsonObject serialize(const Workspace &w) {
                   {"comments", annotations(w.comments)},
                   {"renames", annotations(w.renames)},
                   {"bookmarks", annotations(w.bookmarks)}};
+    j["decompiler_edits"] = w.decompilerEdits;
     QJsonArray bs, es, trail;
     for (auto &b : w.breakpoints)
         bs.append(QJsonObject{{"id", b.id},
@@ -119,6 +120,9 @@ static Workspace deserialize(const QJsonObject &j) {
     w.comments = unannotations(j["comments"].toArray());
     w.renames = unannotations(j["renames"].toArray());
     w.bookmarks = unannotations(j["bookmarks"].toArray());
+    w.decompilerEdits = j["decompiler_edits"].toArray();
+    if (w.decompilerEdits.size() > 1000 || QJsonDocument(w.decompilerEdits).toJson().size() > 1024 * 1024)
+        throw std::runtime_error("Oversized decompiler edit history");
     for (auto value : j["breakpoints"].toArray()) {
         auto a = value.toObject();
         Breakpoint b;

@@ -77,8 +77,8 @@ AiPanel::AiPanel(QWidget *parent, AiService *service)
     scopeBox = new QComboBox;
     scopeBox->setObjectName("aiScope");
     scopeBox->addItems({"Instruction", "Basic block", "Function window"});
-    scopeBox->setToolTip(
-        "Function analysis uses the available bounded window, not a complete decompilation.");
+    scopeBox->setToolTip("Uses recovered function pseudocode and evidence when available; otherwise a "
+                         "bounded assembly window. The context preview reports omissions.");
     explainButton = new QPushButton("Explain selection");
     explainButton->setObjectName("aiExplainButton");
     cancelButton = new QPushButton("Cancel");
@@ -188,6 +188,7 @@ void AiPanel::sourceChanged(QByteArray token) {
     applyButton->setEnabled(false);
     text->clear();
     sourceLabel->setText("Source changed. Request an explanation for this binary or snapshot.");
+    statusLabel->setText("Source changed. Review context to request a new explanation.");
 }
 void AiPanel::requestExplanation(AiScope scope) {
     scopeBox->setCurrentIndex(int(scope));
@@ -309,6 +310,27 @@ void AiPanel::settings() {
         new QLineEdit(QSettings().value("ai/localEndpoint", "http://127.0.0.1:1234/v1").toString());
     endpoint->setObjectName("aiLocalEndpoint");
     form->addRow("Local server URL", endpoint);
+    auto *timeout = new QSpinBox;
+    timeout->setObjectName("aiLocalTimeout");
+    timeout->setRange(30, 600);
+    timeout->setSuffix(" seconds");
+    timeout->setValue(QSettings().value("ai/localTimeoutSeconds", 300).toInt());
+    timeout->setToolTip("Total local request time, including prompt processing and generation. Slower CPU "
+                        "models may need several minutes. Cancel remains available.");
+    form->addRow("Local request limit", timeout);
+    auto *outputLimit = new QSpinBox;
+    outputLimit->setObjectName("aiLocalOutputLimit");
+    outputLimit->setRange(256, 8192);
+    outputLimit->setSingleStep(256);
+    outputLimit->setValue(QSettings().value("ai/localMaxTokens", 2048).toInt());
+    outputLimit->setToolTip(
+        "Maximum generated tokens. A larger limit allows longer explanations and suggestions but takes more "
+        "time. Truncated output is never saved as a completed answer.");
+    form->addRow("Local output limit (tokens)", outputLimit);
+    connect(outputLimit, &QSpinBox::valueChanged, &dialog,
+            [](int tokens) { QSettings().setValue("ai/localMaxTokens", tokens); });
+    connect(timeout, &QSpinBox::valueChanged, &dialog,
+            [](int seconds) { QSettings().setValue("ai/localTimeoutSeconds", seconds); });
     layout->addLayout(form);
     auto *localNote = plainLabel(
         "LM Studio: http://127.0.0.1:1234/v1 · Ollama: http://127.0.0.1:11434/v1. Start the server and load "
@@ -405,6 +427,8 @@ void AiPanel::settings() {
     };
     auto providerChanged = [=](int index) {
         endpoint->setEnabled(index == 2);
+        timeout->setEnabled(index == 2);
+        outputLimit->setEnabled(index == 2);
         localNote->setVisible(index == 2);
     };
     providerChanged(provider->currentIndex());

@@ -436,7 +436,10 @@ class AiTests : public QObject {
         QVERIFY(aiExplanationHtml(inlineReference).contains("<code><a href='ai-source:1000'>"));
         auto code = decode(QByteArray::fromHex("b80100000083f8027401c3c3"), 0x1000);
         auto block = makeAiContext(nullptr, code, 0x100a, AiScope::Block, "fixture");
-        QCOMPARE(block.addresses.size(), 1);
+        QVERIFY(block.addresses.contains(0x100a));
+        QVERIFY(block.addresses.size() >
+                1); // Includes block dependencies instead of an isolated instruction.
+        QVERIFY(block.data.contains("control_flow"));
         Snapshot snapshot;
         snapshot.ip = 0x1000;
         snapshot.registers["rax"] = 7;

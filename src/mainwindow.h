@@ -1,7 +1,8 @@
 #pragma once
-#include "debugger.h"
-#include "semantics.h"
 #include "ai_panel.h"
+#include "debugger.h"
+#include "pseudocode_view.h"
+#include "semantics.h"
 #include <QtConcurrent>
 #include <QtWidgets>
 #include <optional>
@@ -73,6 +74,7 @@ class MainWindow : public QMainWindow {
     void dragEnterEvent(QDragEnterEvent *) override;
     void dropEvent(QDropEvent *) override;
     void resizeEvent(QResizeEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
 
   private:
     Workspace work;
@@ -120,6 +122,26 @@ class MainWindow : public QMainWindow {
     AiPanel *aiPanel = nullptr;
     AiService *providedAiService = nullptr;
     QDockWidget *aiDock = nullptr;
+    DecompilerService *decompiler = nullptr;
+    PseudocodeEditor *pseudocode = nullptr;
+    QLabel *decompilerStatus = nullptr, *functionSummary = nullptr;
+    QComboBox *functionPicker = nullptr;
+    QTableView *splitAssembly = nullptr;
+    QTimer decompilerNavigation;
+    std::optional<DecompiledFunction> decompiled;
+    std::optional<QJsonObject> pendingDecompilerEdit;
+    QByteArray requestedDecompilation;
+    bool compactDecompilerLayout = false;
+    void setDebuggerPanesVisible(bool visible);
+    void setupDecompiler(QMenu *investigate, QMenu *settings);
+    void openDecompiler();
+    void configureDecompiler();
+    void requestDecompilation(bool force = false);
+    void updateDecompilerSelection();
+    void editDecompiled(QString kind, QString variable = {});
+    void decompilerReferences();
+    QJsonArray analysisEdits() const;
+    std::optional<quint64> staticSelection(QString *reason = nullptr) const;
     QListWidget *recents;
     bool confirmDiscard();
     void changed();

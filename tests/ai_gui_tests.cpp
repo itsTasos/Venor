@@ -237,6 +237,12 @@ class AiGuiTests : public QObject {
         QApplication::setApplicationDisplayName("Venor — real local model verification");
         QTemporaryDir temp(QDir::currentPath() + "/ai-case-XXXXXX");
         QSettings().clear();
+        if (!qEnvironmentVariableIsEmpty("VENOR_LIVE_LOCAL_MAX_TOKENS"))
+            QSettings().setValue("ai/localMaxTokens",
+                                 qEnvironmentVariableIntValue("VENOR_LIVE_LOCAL_MAX_TOKENS"));
+        if (!qEnvironmentVariableIsEmpty("VENOR_LIVE_LOCAL_TIMEOUT_SECONDS"))
+            QSettings().setValue("ai/localTimeoutSeconds",
+                                 qEnvironmentVariableIntValue("VENOR_LIVE_LOCAL_TIMEOUT_SECONDS"));
         ChatGptAuth auth(nullptr, temp.filePath("credentials"));
         AiService service(nullptr, &auth);
         MainWindow window(&service);
@@ -254,6 +260,22 @@ class AiGuiTests : public QObject {
                     }
             }
         window.navigate(selected);
+        for (const auto &function : window.binary()->exports)
+            if (function.name == "meaning_allocation") {
+                selected = function.address;
+                window.navigate(selected);
+                break;
+            }
+        bool recovered = !qEnvironmentVariableIsEmpty("VENOR_GHIDRA_HOME");
+        if (recovered) {
+            auto *backend = window.findChild<DecompilerService *>();
+            QTRY_VERIFY_WITH_TIMEOUT(backend->ready() || !backend->lastError().isEmpty(), 300000);
+            QVERIFY2(backend->ready(), qPrintable(backend->lastError()));
+            auto *editor = window.findChild<PseudocodeEditor *>("pseudocode");
+            const auto *function = backend->containing(selected);
+            QVERIFY(function);
+            QTRY_COMPARE_WITH_TIMEOUT(editor->function().entry, function->entry, 120000);
+        }
         auto endpoint = QUrl(qEnvironmentVariable("VENOR_LIVE_LOCAL_ENDPOINT", "http://127.0.0.1:11434/v1"));
         service.configure(AiProviderKind::Local, endpoint);
         QSignalSpy models(&service, &AiService::modelsReady), failures(&service, &AiService::failed);
@@ -275,13 +297,16 @@ class AiGuiTests : public QObject {
             dialog->accept();
         });
         QSignalSpy completed(&service, &AiService::completed);
-        panel->requestExplanation(AiScope::Instruction);
-        QTRY_VERIFY_WITH_TIMEOUT(!service.busy(), 150000);
+        panel->requestExplanation(recovered ? AiScope::Function : AiScope::Instruction);
+        QTRY_VERIFY_WITH_TIMEOUT(!service.busy(), 660000);
         QVERIFY2(failures.isEmpty(),
                  failures.isEmpty() ? "" : qPrintable(failures.last().first().toString()));
         QCOMPARE(completed.size(), 1);
         auto answer = qvariant_cast<AiExplanation>(completed.first().first());
         QVERIFY(!answer.text.isEmpty());
+        if (recovered)
+            QVERIFY(answer.context.data["decompilation"].toObject()["pseudocode"].toString().contains(
+                "VirtualAlloc"));
         QCOMPARE(answer.provider, QString("Local endpoint"));
         QCOMPARE(answer.model, model);
         capture(window, "ai-real-local-model-explanation");
@@ -305,6 +330,8 @@ class AiGuiTests : public QObject {
     }
 };
 int main(int argc, char **argv) {
+    if (!qEnvironmentVariableIsEmpty("VENOR_LIVE_LOCAL_MODEL"))
+        qputenv("QTEST_FUNCTION_TIMEOUT", "900000");
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
     app.setOrganizationName("VenorTests");

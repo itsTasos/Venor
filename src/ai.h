@@ -1,5 +1,6 @@
 #pragma once
 #include "ai_auth.h"
+#include "decompiler.h"
 #include "types.h"
 
 namespace vnr {
@@ -14,7 +15,8 @@ struct AiContext {
     QByteArray key() const;
 };
 AiContext makeAiContext(const Binary *binary, QVector<Instruction> window, quint64 selection, AiScope scope,
-                        QString provenance, const Snapshot *snapshot = nullptr, const Event *event = nullptr);
+                        QString provenance, const Snapshot *snapshot = nullptr, const Event *event = nullptr,
+                        const DecompiledFunction *decompiled = nullptr);
 struct AiSuggestion {
     QString kind, text, variable;
     quint64 address = 0;
