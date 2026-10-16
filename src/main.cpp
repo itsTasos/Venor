@@ -5,7 +5,9 @@ int main(int argc, char **argv) {
     app.setWindowIcon(QIcon(":/icons/venor.ico"));
     app.setOrganizationName("LocalAnalysis");
     app.setApplicationName(APP_TITLE);
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion(APP_VERSION);
+    if (QSslSocket::availableBackends().contains("schannel"))
+        QSslSocket::setActiveBackend("schannel");
     QCommandLineParser p;
     p.setApplicationDescription("Native local Windows x64 investigation workstation");
     p.addHelpOption();
@@ -17,7 +19,7 @@ int main(int argc, char **argv) {
     if (p.isSet("check-runtime")) {
         auto db = QSqlDatabase::addDatabase("QSQLITE", "runtime_check");
         db.setDatabaseName(":memory:");
-        return db.open() && !app.windowIcon().isNull() &&
+        return db.open() && QSslSocket::supportsSsl() && QSslSocket::activeBackend() == "schannel" && !app.windowIcon().isNull() &&
                        !app.windowIcon().pixmap(QSize(32, 32)).isNull()
                    ? 0
                    : 2;

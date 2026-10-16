@@ -27,6 +27,8 @@
 #investigations and potentially sensitive captured process data
 *.venor
 *.venor-*
+*.dpapi
+*.dpapi.*
 /evidence/
 /*-results.txt
 /core-case-*/
@@ -34,6 +36,7 @@
 /gui-debug-*/
 /gui-error-*/
 /debug-case-*/
+/ai-case-*/
 *.dmp
 *.log
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "debugger.h"
 #include "semantics.h"
+#include "ai_panel.h"
 #include <QtConcurrent>
 #include <QtWidgets>
 #include <optional>
@@ -50,7 +51,7 @@ class RowModel : public QAbstractTableModel {
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
-    explicit MainWindow();
+    explicit MainWindow(AiService *ai = nullptr);
     void openBinary(const QString &path, bool restoring = false);
     void openInvestigation(const QString &path);
     bool saveInvestigation(QString path = {});
@@ -116,6 +117,9 @@ class MainWindow : public QMainWindow {
     QDockWidget *exploreDock, *contextDock, *registerDock, *stackDock, *framesDock, *breakpointsDock,
         *threadsDock, *timelineDock, *modulesDock, *outputDock;
     QMenu *recentMenu;
+    AiPanel *aiPanel = nullptr;
+    AiService *providedAiService = nullptr;
+    QDockWidget *aiDock = nullptr;
     QListWidget *recents;
     bool confirmDiscard();
     void changed();
@@ -147,6 +151,9 @@ class MainWindow : public QMainWindow {
     void theme(bool);
     void updateRecents(QString path = {});
     void eventSelection(const QModelIndex &);
+    void setupAi(QMenu *investigate, QMenu *settings);
+    AiContext aiContext(AiScope scope, bool runtime) const;
+    QByteArray aiSourceIdentity() const;
     QDockWidget *dock(QString, QString, QWidget *, Qt::DockWidgetArea);
     QTableView *table(QAbstractItemModel *);
 };

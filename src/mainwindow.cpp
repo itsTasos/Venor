@@ -114,7 +114,7 @@ QDockWidget *MainWindow::dock(QString title, QString id, QWidget *content, Qt::D
     docks << d;
     return d;
 }
-MainWindow::MainWindow() : debugger(this) {
+MainWindow::MainWindow(AiService *ai) : debugger(this), providedAiService(ai) {
     auto available = QGuiApplication::primaryScreen()->availableGeometry().size();
     resize(std::min(1520, available.width() - 40), std::min(940, available.height() - 60));
     setMinimumSize(900, 600);
@@ -627,6 +627,9 @@ MainWindow::MainWindow() : debugger(this) {
     output->setFont(mono());
     output->setMaximumBlockCount(5000);
     outputDock = dock("Output / Diagnostics", "output", output, Qt::BottomDockWidgetArea);
+    auto *settingsMenu = new QMenu("&Settings", this);
+    menuBar()->insertMenu(help->menuAction(), settingsMenu);
+    setupAi(investigate, settingsMenu);
     for (auto *d : docks)
         view->addAction(d->toggleViewAction());
     view->addSeparator();
@@ -685,7 +688,7 @@ MainWindow::MainWindow() : debugger(this) {
     action(help, "About", {}, [this] {
         QMessageBox::about(this, QApplication::applicationDisplayName(),
                            "Native Windows x64 analysis · Qt 6 · Zydis · Microsoft DbgEng\nLocal "
-                           "deterministic analysis. No AI, uploads, or inference services.\nVersion " +
+                           "deterministic analysis with optional, consent-based AI explanations.\nVersion " +
                                QApplication::applicationVersion());
     });
     fileLabel = new QLabel("No binary loaded");
@@ -845,6 +848,7 @@ void MainWindow::chooseInvestigation() {
         openInvestigation(p);
 }
 void MainWindow::openBinary(const QString &path, bool restore) {
+    if (aiPanel) aiPanel->sourceChanged(QUuid::createUuid().toByteArray());
     if (loading) {
         statusBar()->showMessage("Wait for analysis to finish or cancel it.");
         return;
@@ -889,6 +893,7 @@ void MainWindow::openInvestigation(const QString &path) {
         return;
     try {
         auto loaded = loadWorkspace(path);
+        if (aiPanel) aiPanel->sourceChanged(QUuid::createUuid().toByteArray());
         if (loaded.binary.isEmpty() && loaded.hash.isEmpty()) {
             work = std::move(loaded);
             workspacePath = path;
@@ -1286,6 +1291,7 @@ void MainWindow::updateSessionInfo() {
     stateLabel->setToolTip(text);
 }
 void MainWindow::explain(const Instruction &i) {
+    if (aiPanel) aiPanel->sourceChanged(aiSourceIdentity());
     auto code = selectedFunction();
     QByteArray key = QByteArray::number(code.isEmpty() ? 0 : code.first().address);
     key += liveCode ? "live" : evidenceCode ? "saved" : "file";
@@ -2253,6 +2259,10 @@ void MainWindow::presetLayout(QString name) {
     }
     addDockWidget(Qt::LeftDockWidgetArea, exploreDock);
     addDockWidget(Qt::RightDockWidgetArea, contextDock);
+    if (aiDock) {
+        addDockWidget(Qt::RightDockWidgetArea, aiDock);
+        tabifyDockWidget(contextDock, aiDock);
+    }
     for (auto *d : {registerDock, stackDock, framesDock, breakpointsDock, threadsDock, timelineDock,
                     modulesDock, outputDock})
         removeDockWidget(d);
@@ -2270,6 +2280,7 @@ void MainWindow::presetLayout(QString name) {
     }
     for (auto *d : docks)
         d->show();
+    if (aiDock) aiDock->hide();
     registerDock->raise();
     resizeDocks({exploreDock, contextDock}, {name == "Beginner" ? 260 : 300, name == "Beginner" ? 400 : 360},
                 Qt::Horizontal);
