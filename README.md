@@ -3,7 +3,7 @@
 **Understand Windows binaries. Follow the evidence. Keep your investigation local.**
 
 Venor is a native Windows x64 reverse-engineering workstation that combines static
-analysis, live debugging and readable assembly explanations in one desktop app.
+analysis, real Ghidra decompilation, live debugging and readable explanations in one desktop app.
 Explore an executable, understand supported instructions and Windows API calls,
 set breakpoints, and save your findings for later.
 
@@ -22,7 +22,8 @@ when you want an additional interpretation; code is never sent automatically.
 | --- | --- |
 | **Explore binaries** | Open x64 PE `.exe` and `.dll` files; inspect functions, imports, exports, strings, sections and metadata. |
 | **Understand assembly** | Switch between synchronized **Assembly**, **Flow** and **Meaning** views. Read instruction explanations, supported API arguments, decoded flags and local data-flow clues, with links to the source instructions. |
-| **Request an AI interpretation** | Optionally explain an instruction, block or bounded function window using a ChatGPT subscription or local model server. Review the exact context before sending, follow validated address links, and approve each suggested annotation. |
+| **Reconstruct code** | Use a local Ghidra installation to recover functions and C-like pseudocode on demand. Follow mapped instructions and calls, inspect cross-references, rename variables/functions and edit known C types or signatures. Analysis and function results are cached locally. |
+| **Request an AI interpretation** | Explain an instruction, block or function with available Ghidra pseudocode, inferred types, flow, references and API evidence. Review the exact context and omission counts before sending to a ChatGPT subscription or local model server; approve each suggested annotation. |
 | **Debug real processes** | Launch an executable or attach to an eligible process. Continue, pause and step through execution; inspect registers, flags, threads, modules, stack, call stack and memory. |
 | **Choose useful breakpoints** | Use searchable API presets for process, memory, file and network operations, or create custom address/symbol breakpoints and hardware watchpoints. Add conditions, hit thresholds, groups, one-shot or log-only actions. |
 | **Inspect captured evidence** | Review breakpoint and exception events in the timeline, follow saved snapshots back to code, and inspect supported API inputs and paired return values. |
@@ -31,7 +32,58 @@ when you want an additional interpretation; code is never sent automatically.
 
 The built-in **Meaning** view uses deterministic rules and a curated API
 catalogue. Optional **AI Explanation / Readable Code** is a separate, explicitly
-labelled interpretation that can be wrong. Neither view is a full decompiler.
+labelled interpretation that can be wrong. **Decompiled Code** is the independent,
+real Ghidra decompiler view. Reconstructed pseudocode and inferred types can be
+incomplete or incorrect; they are not the original source.
+
+## Real decompilation with Ghidra
+
+1. Download and extract an official [Ghidra release](https://github.com/NationalSecurityAgency/ghidra/releases).
+   Install a compatible **64-bit JDK**. This release was developed against
+   **Ghidra 12.1.4 and JDK 21**; a JRE alone is insufficient.
+2. In Venor choose **Settings → Decompiler / Ghidra…**. Select the extracted
+   Ghidra folder (containing `support/analyzeHeadless.bat`) and JDK folder
+   (containing `bin/java.exe` and `bin/javac.exe`). Save.
+3. Open an x64 PE and select **Decompiled Code**. Initial analysis runs in a
+   separate process; the explorer then shows Ghidra-recovered functions.
+   Select a function, or press `Ctrl+Shift+D` at an instruction to decompile
+   its containing function. The original assembly debugger remains available
+   if Ghidra is absent or analysis fails.
+4. Click mapped pseudocode tokens to synchronize assembly selection. `Ctrl+click`
+   follows a referenced function or opens mapped assembly. Unmapped tokens have
+   no fabricated address. Enable **Assembly alongside** to see both at once.
+   Use **Flow** for control flow and **Cross-references** for callers, calls and data references.
+   **Debugger panes** expands or collapses registers, stack, breakpoints and output.
+   Static decompilation initially gives this space to code; starting a debugger
+   session opens the debugger panes automatically. The **View** menu still controls each dock.
+5. Use **Names & types** or the pseudocode context menu to rename a recovered
+   function/variable or edit a C signature/type. Supported types must be known
+   to Ghidra's program data-type manager. `Ctrl+Shift+N` renames the function
+   while pseudocode has focus. Rejected edits leave saved analysis unchanged.
+6. Save the `.venor` investigation. User analysis edits are replayed against the
+   cached original Ghidra project when reopened; they do not leak into another
+   investigation or modify the original executable.
+
+Ghidra and Java are **external prerequisites**, not bundled into the portable
+ZIP. The integration scripts are shipped in `ghidra/`. No AI is required for
+decompilation. Automatic PDB analysis is disabled to keep initial recovery local.
+The first import has a four-minute analysis limit and five-minute process deadline;
+function decompilation has a 45-second Ghidra limit and two-minute request deadline.
+Cancellation during import leaves an incomplete cache project that is not reused;
+cancelled function requests leave the persistent worker available.
+
+The cache lives under the application's local cache directory (`ghidra/`), keyed
+by binary SHA-256, Ghidra version and integration-script version. It contains a
+copy of the input file and analysis results, so treat it as investigation data.
+Close Venor before manually removing obsolete cache folders. One worker per binary
+cache is allowed at a time; a second window reports the lock clearly.
+
+During debugging, module-relative addresses are translated to the file's preferred
+base. Captured instruction bytes must match before on-disk pseudocode is associated
+with that stop. **Only the captured byte window is verified**; other function bytes
+remain static assumptions. Modified/unpacked code and differing absolute relocations
+are conservatively refused. Historical snapshots lack verified module mappings and
+must be examined separately from static pseudocode.
 
 ## Get started
 
@@ -167,8 +219,11 @@ model forwards requests to a cloud service.
 
 Make sure the server's configured context window can hold the JSON you approve;
 some local servers truncate oversized prompts. Choose **Instruction** for a
-smaller context. Local responses have a 2,048-token output cap, and requests have
-a two-minute deadline. Qwen3 models request concise, non-thinking output through
+smaller context. The local output cap defaults to 2,048 tokens and is adjustable
+from 256–8,192 tokens in provider settings. The local request
+deadline defaults to five minutes and can be adjusted from 30–600 seconds in
+**Settings → AI Providers…**; ChatGPT requests retain a two-minute deadline.
+Qwen3 models request concise, non-thinking output through
 the compatibility API; incomplete responses remain unverified and are not cached.
 
 ### Review results and suggestions
@@ -183,20 +238,26 @@ Annotations you explicitly approve are saved with your investigation.
 Only citations matching instruction addresses in the submitted context become
 navigation links. This checks the address, **not the truth of the AI claim**.
 Suggested function names are restricted to known static function candidates;
-variable names are advisory comments because Venor has no recovered source-level
-variable model. **Review…** asks before changing local annotations.
+AI variable-name suggestions remain advisory comments; the independent Ghidra
+**Names & types** editor changes recovered variables explicitly. **Review…** asks before changing local annotations.
 AI output never changes the target process or runs debugger commands.
 
 Context contains selected instruction bytes, decoded edges, relevant static
-metadata and deterministic interpretations, bounded to at most 160 instructions
-and 192 KiB of JSON. It contains no complete binary, absolute binary path or
+metadata and deterministic interpretations, selected to fit 192 KiB of JSON.
+Up to 256 instructions are prioritized around the selected block, entry, calls,
+branches and returns. Available Ghidra pseudocode (up to 48 Ki UTF-16 characters),
+inferred variables/types, source mappings, CFG, references and callers are included
+with explicit omission counts. It contains no complete binary, absolute binary path or
 investigation notes. Binary-derived content is treated as untrusted input.
-Function explanations describe an available window, not guaranteed complete
-function recovery or decompiler output.
+Without a matching decompilation, function explanations fall back to the available
+bounded assembly window and clearly report the absence of recovered pseudocode.
 
 The normal automated AI suites use synthetic signed identities and a clearly
-labelled local HTTP protocol fixture. An opt-in native GUI smoke check also
-completed a real instruction explanation through an installed Ollama model.
+labelled local HTTP protocol fixture. An opt-in native GUI check also completed
+a real function explanation using Ghidra pseudocode through an installed Ollama
+model (4,096 output tokens allowed, 600-second deadline). This verifies context
+delivery and completion; the model still made factual errors, so interpretations
+require review against the deterministic evidence.
 **Real ChatGPT authorization/inference and live LM Studio usage remain
 unverified.** This does not establish compatibility or explanation accuracy for
 every local model.
@@ -270,7 +331,7 @@ Packaging requires the matching Qt source archive at
 license files used by the script. The archive and local toolchains stay outside
 Git. See [third-party notices](THIRD_PARTY_NOTICES.md) for source and license details.
 
-The output is `release/Venor-0.2.0-win64.zip`, containing the app, required runtime
+The output is `release/Venor-0.3.0-win64.zip`, containing the app, required runtime
 libraries/plugins, sample target, tests, licenses, application/decoder source and
 available local verification evidence. The verification script runs the packaged
 tests and checks native startup with developer Qt/compiler directories removed
@@ -290,7 +351,24 @@ $env:QT_QPA_PLATFORM = "offscreen"
 ./gui_tests.exe (Resolve-Path ./benign_target.exe)
 ./ai_tests.exe
 ./ai_gui_tests.exe (Resolve-Path ./benign_target.exe)
+./decompiler_tests.exe (Resolve-Path ./decompiler_target.exe) (Resolve-Path ./libdecompiler_library.dll)
+./decompiler_gui_tests.exe (Resolve-Path ./decompiler_target.exe)
 ```
+
+Ghidra integration cases are opt-in; without configuration they report a skip.
+To execute real backend and GUI workflows, set these before running those suites:
+
+```powershell
+$env:VENOR_GHIDRA_HOME = "C:/Tools/ghidra_12.1.4_PUBLIC"
+$env:VENOR_JAVA_HOME = "C:/Program Files/Java/jdk-21"
+```
+
+Tested backend cases include actual EXE/DLL decompilation, conditions/loops/API
+calls, mappings, function/variable/signature/type edits, cancellation, invalid edits,
+cache reuse, workspace round trips and isolation between investigations. Native
+GUI checks additionally exercise file selection, source navigation, a real DbgEng
+breakpoint, context consent and a labelled inference protocol fixture. That fixture
+does not establish a real provider's explanation accuracy.
 
 The real local-model check is opt-in and skipped by default. With a local model
 already installed and its server running, run it from the package folder:
@@ -299,6 +377,8 @@ already installed and its server running, run it from the package folder:
 $env:QT_QPA_PLATFORM = "windows"
 $env:VENOR_LIVE_LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1"
 $env:VENOR_LIVE_LOCAL_MODEL = "your-installed-model-id"
+$env:VENOR_LIVE_LOCAL_MAX_TOKENS = "4096"
+$env:VENOR_LIVE_LOCAL_TIMEOUT_SECONDS = "600"
 ./ai_gui_tests.exe (Resolve-Path ./benign_target.exe) realLocalModel
 ```
 
@@ -313,7 +393,8 @@ picker. These checks do not establish OS-wide DPI or multi-monitor behavior.
 
 Venor currently supports **Windows x64 PE files and user-mode processes**.
 It does not support 32-bit targets, other executable formats, kernel debugging,
-emulation, full decompilation or time-travel debugging.
+emulation or time-travel debugging. Ghidra does not guarantee complete recovery
+of arbitrary, optimized, obfuscated or self-modifying code.
 
 - **Explanations are bounded.** Meaning interprets supported operations locally
   within basic blocks; unknown values stay unknown. API coverage is curated,
@@ -351,8 +432,8 @@ tail calls, exceptions, non-returning APIs and unusual stacks can prevent pairin
 At most 256 return observers are retained per session. API outputs and successful
 I/O are not inferred from entry hits or raw return values alone.
 
-**Meaning and code recovery.** Graph/readable windows are capped at 160
-instructions / 4 KiB. Function candidates come from the entry point, exports,
+**Meaning and code recovery.** Without Ghidra, graph/readable windows are capped at 160
+instructions / 4 KiB. Fallback function candidates come from the entry point, exports,
 x64 unwind records and direct calls. Local interpretation covers supported GPR
 widths/aliases, constants, arithmetic, relative stack slots, selected loads/stores,
 import-derived API arguments and comparison-to-branch links. Facts are reset at
@@ -361,6 +442,13 @@ related facts; calls invalidate volatile state, or all tracked registers for
 unknown conventions. General memory loads are not treated as constants. FS/GS
 bases and 32-bit address-size overrides are not resolved. Windows API contracts
 are matched to expected modules and use the Windows x64 ABI; SIZE_T stays 64-bit.
+
+With Ghidra available, Meaning/Flow use the recovered instruction listing up to
+1,200 instructions; larger functions display a labelled 512-instruction window
+around the selection. The independent pseudocode view retains the full returned
+reconstruction (up to 1 Mi UTF-16 characters, 100,000 tokens and 30,000 instructions).
+Partial analysis, decompiler failures and unsupported instructions are reported;
+cache hits do not imply that inferred types or program intent are proven.
 
 **Capture and storage.** Static string previews are labelled file bytes; observed
 operands use bytes from the selected snapshot. API arguments are stored as

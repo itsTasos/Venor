@@ -25,3 +25,10 @@ identity-signature verification uses Windows CNG and credential encryption uses
 Windows DPAPI. These Windows components are supplied by the operating system.
 No model weights, OpenAI SDK, browser credentials or Codex authentication files
 are included in the distribution.
+
+Optional decompilation uses an external Ghidra installation through its headless
+analyzer, DecompInterface and public program/decompiler APIs. Ghidra is licensed
+under Apache-2.0 and includes dependencies under other licenses; obtain its full
+distribution and notices from https://github.com/NationalSecurityAgency/ghidra/releases .
+Ghidra, its native decompiler and a Java JDK are not redistributed by this package.
+The Venor Java integration scripts are original project code and ship with Venor.

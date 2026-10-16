@@ -12,7 +12,7 @@ function Resolve-ProjectInput([string]$Value) {
 $buildPath = Resolve-ProjectInput $Build
 $qtPath = Resolve-ProjectInput $Qt
 $compilerPath = Resolve-ProjectInput $Compiler
-$destination = Join-Path $root "release/Venor-0.2.0-win64"
+$destination = Join-Path $root "release/Venor-0.3.0-win64"
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 $env:PATH = "$compilerPath/bin;$qtPath/bin;" + $env:PATH
 cmake --install $buildPath --prefix $destination
@@ -23,7 +23,7 @@ foreach ($name in 'libgcc_s_seh-1.dll','libstdc++-6.dll','libwinpthread-1.dll') 
     Copy-Item -LiteralPath "$compilerPath/bin/$name" -Destination $destination -Force
 }
 New-Item -ItemType Directory -Force -Path "$destination/sqldrivers","$destination/tls","$destination/licenses","$destination/source","$destination/evidence" | Out-Null
-foreach ($test in 'core_tests.exe','debugger_tests.exe','gui_tests.exe','ai_tests.exe','ai_gui_tests.exe','libbenign_library.dll') {
+foreach ($test in 'core_tests.exe','debugger_tests.exe','gui_tests.exe','ai_tests.exe','ai_gui_tests.exe','decompiler_tests.exe','decompiler_gui_tests.exe','libbenign_library.dll','libdecompiler_library.dll') {
     Copy-Item -LiteralPath "$buildPath/$test" -Destination $destination -Force
 }
 Copy-Item -LiteralPath "$qtPath/bin/Qt6Test.dll" -Destination $destination -Force
@@ -54,8 +54,11 @@ foreach ($configuration in 'build-debug','build-release') {
         Copy-Item -LiteralPath "$root/$configuration/Testing/Temporary/LastTest.log" -Destination $target -Force
     }
 }
-if (Test-Path "$root/evidence") { Copy-Item -Path "$root/evidence/*" -Destination "$destination/evidence" -Recurse -Force }
-$archive = "$root/release/Venor-0.2.0-win64.zip"
+# Only portable verification reports. Never bundle Ghidra caches, projects, mailbox files or credentials.
+foreach ($report in 'decompiler-release.txt','decompiler-debug.txt','decompiler-packaged.txt','decompiler-gui-native.txt','decompiler-gui-150.txt','decompiler-real-local.txt','decompiler-real-local-timeout-120.txt','decompiler-real-local-length-1024.txt','upgrade-verification.json') {
+    if (Test-Path "$root/evidence/$report") { Copy-Item -LiteralPath "$root/evidence/$report" -Destination "$destination/evidence" -Force }
+}
+$archive = "$root/release/Venor-0.3.0-win64.zip"
 Compress-Archive -LiteralPath $destination -DestinationPath $archive -Force
 Get-FileHash -LiteralPath $archive -Algorithm SHA256 | Format-List
 Write-Output "Packaged: $archive"
