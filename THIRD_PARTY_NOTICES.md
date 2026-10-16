@@ -19,3 +19,9 @@ The MinGW-w64 headers/import libraries and GCC runtime carry their respective
 permissive notices and GCC runtime exception; runtime binaries, if required,
 are shipped beside the application. See https://www.mingw-w64.org/license/
 and https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html .
+
+Optional provider networking uses Qt Network. TLS uses Windows Schannel;
+identity-signature verification uses Windows CNG and credential encryption uses
+Windows DPAPI. These Windows components are supplied by the operating system.
+No model weights, OpenAI SDK, browser credentials or Codex authentication files
+are included in the distribution.

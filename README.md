@@ -8,10 +8,12 @@ Explore an executable, understand supported instructions and Windows API calls,
 set breakpoints, and save your findings for later.
 
 Built with **C++20 · Qt 6 Widgets · Microsoft DbgEng · Zydis · SQLite**.
-All analysis runs on your machine. **No AI, cloud inference or automatic uploads.**
+Static analysis and debugging run on your machine. **AI is optional and disabled
+by default.** Connect an eligible ChatGPT account or a local model server only
+when you want an additional interpretation; code is never sent automatically.
 
 [Get started](#get-started) · [Capabilities](#capabilities) ·
-[First investigation](#your-first-investigation) · [Build from source](#build-from-source) ·
+[First investigation](#your-first-investigation) · [Optional AI](#optional-ai-explanations) · [Build from source](#build-from-source) ·
 [Limitations](#scope-and-limitations)
 
 ## Capabilities
@@ -20,15 +22,16 @@ All analysis runs on your machine. **No AI, cloud inference or automatic uploads
 | --- | --- |
 | **Explore binaries** | Open x64 PE `.exe` and `.dll` files; inspect functions, imports, exports, strings, sections and metadata. |
 | **Understand assembly** | Switch between synchronized **Assembly**, **Flow** and **Meaning** views. Read instruction explanations, supported API arguments, decoded flags and local data-flow clues, with links to the source instructions. |
+| **Request an AI interpretation** | Optionally explain an instruction, block or bounded function window using a ChatGPT subscription or local model server. Review the exact context before sending, follow validated address links, and approve each suggested annotation. |
 | **Debug real processes** | Launch an executable or attach to an eligible process. Continue, pause and step through execution; inspect registers, flags, threads, modules, stack, call stack and memory. |
 | **Choose useful breakpoints** | Use searchable API presets for process, memory, file and network operations, or create custom address/symbol breakpoints and hardware watchpoints. Add conditions, hit thresholds, groups, one-shot or log-only actions. |
 | **Inspect captured evidence** | Review breakpoint and exception events in the timeline, follow saved snapshots back to code, and inspect supported API inputs and paired return values. |
 | **Keep an investigation** | Save comments, renamed symbols, bookmarks, notes, breakpoints, navigation history, layout and captured evidence in a local `.venor` file. |
 | **Work your way** | Search code and data, follow references, use the command palette, rearrange dock panels, and choose dark/light themes or Beginner/Analyst/Expert layouts. |
 
-Explanations use deterministic rules and a curated API catalogue. Known facts,
-local deductions and unavailable values are distinguished; Venor does not invent
-source code or infer a program's intent.
+The built-in **Meaning** view uses deterministic rules and a curated API
+catalogue. Optional **AI Explanation / Readable Code** is a separate, explicitly
+labelled interpretation that can be wrong. Neither view is a full decompiler.
 
 ## Get started
 
@@ -110,6 +113,94 @@ without executing anything.
 | Comment / rename / bookmark | `;` / `N` / `Ctrl+D` |
 | Command palette / help | `Ctrl+Shift+P` / `F1` |
 
+## Optional AI explanations
+
+All core workflows work with **AI disabled**, including static explanations,
+breakpoints, live debugging and saved investigations. AI never runs on selection
+changes or in the background by itself.
+
+### Connect a ChatGPT subscription
+
+1. Open **Settings → AI Providers…**.
+2. Click **Continue with ChatGPT** and complete sign-in and permission approval
+   yourself in your system browser. Venor uses the official open-source OAuth
+   flow with PKCE and validates the returned account identity and granted scopes.
+3. Choose **ChatGPT subscription**, then **Use provider and load models**.
+4. Select an available model. The list comes from the selected account; account,
+   workspace, region and usage policies can restrict access.
+5. Open code and use **Investigate → Explain Instruction / Block / Function…**,
+   or open **Readable Code Mode** and click **Explain selection**.
+6. Review the destination, model and exact JSON context. Runtime register/API
+   evidence is excluded unless you check its box. Click **Send selected context**
+   only when you approve that data leaving your machine.
+
+This uses eligible ChatGPT plan usage, subject to its permissions and limits.
+No OpenAI API key is required, and Venor never silently switches to paid API
+billing. Account sign-in, plan permission and a completed model response are
+separate checks; a connected account does not guarantee inference access.
+The integration follows the current
+[official open-source flow](https://developers.openai.com/siwc/token-sharing-open-source).
+
+Settings supports saved account selection, reconnection, cancellation and
+sign-out. Tokens are protected for your Windows user with **DPAPI**, saved
+atomically in the application's local data folder, and refreshed with a lock
+against concurrent token rotation. Sign-out attempts remote revocation and
+clears local tokens while retaining the account registration for reconnection.
+If revocation cannot be confirmed, disconnect Venor in ChatGPT Settings.
+Venor never reads browser sessions or Codex credentials.
+
+### Use a local model server
+
+Start an OpenAI-compatible server and load a local model, then select **Local
+OpenAI-compatible server** in provider settings. Common URLs are:
+
+| Server | Local endpoint |
+| --- | --- |
+| LM Studio | `http://127.0.0.1:1234/v1` |
+| Ollama | `http://127.0.0.1:11434/v1` |
+
+Click **Use provider and load models**, select a model and request an explanation.
+Only numeric loopback HTTP endpoints are accepted; remote URLs and redirects
+are rejected. Local server authentication is not currently supported. For offline
+inference, use a locally loaded model: Venor cannot verify whether a server or
+model forwards requests to a cloud service.
+
+Make sure the server's configured context window can hold the JSON you approve;
+some local servers truncate oversized prompts. Choose **Instruction** for a
+smaller context. Local responses have a 2,048-token output cap, and requests have
+a two-minute deadline. Qwen3 models request concise, non-thinking output through
+the compatibility API; incomplete responses remain unverified and are not cached.
+
+### Review results and suggestions
+
+The dock streams text while keeping debugger controls available. **Cancel**
+stops the request; interrupted, failed or incomplete output is not cached or
+available for applying suggestions. Completed explanations are cached in memory
+for the current app session, with a maximum of 32 entries. Settings can clear
+that cache; explanations and tokens are not written into investigation files.
+Annotations you explicitly approve are saved with your investigation.
+
+Only citations matching instruction addresses in the submitted context become
+navigation links. This checks the address, **not the truth of the AI claim**.
+Suggested function names are restricted to known static function candidates;
+variable names are advisory comments because Venor has no recovered source-level
+variable model. **Review…** asks before changing local annotations.
+AI output never changes the target process or runs debugger commands.
+
+Context contains selected instruction bytes, decoded edges, relevant static
+metadata and deterministic interpretations, bounded to at most 160 instructions
+and 192 KiB of JSON. It contains no complete binary, absolute binary path or
+investigation notes. Binary-derived content is treated as untrusted input.
+Function explanations describe an available window, not guaranteed complete
+function recovery or decompiler output.
+
+The normal automated AI suites use synthetic signed identities and a clearly
+labelled local HTTP protocol fixture. An opt-in native GUI smoke check also
+completed a real instruction explanation through an installed Ollama model.
+**Real ChatGPT authorization/inference and live LM Studio usage remain
+unverified.** This does not establish compatibility or explanation accuracy for
+every local model.
+
 ## Build from source
 
 ### Requirements
@@ -118,7 +209,7 @@ without executing anything.
 - CMake **3.24+**, Ninja and Git, available on `PATH`.
 - A compatible MinGW-w64 toolchain; the current build uses **GCC 13.1**.
 - **Qt 6.8+** for the same compiler ABI, including Widgets, Concurrent, Sql and
-  Test. The packaged configuration uses **Qt 6.8.3 MinGW 64-bit**.
+  Network and Test. The packaged configuration uses **Qt 6.8.3 MinGW 64-bit**.
 - The pinned Zydis dependency and its nested Zycore submodule.
 
 Run the following in PowerShell. Adjust the Qt/compiler paths to your installation:
@@ -179,7 +270,7 @@ Packaging requires the matching Qt source archive at
 license files used by the script. The archive and local toolchains stay outside
 Git. See [third-party notices](THIRD_PARTY_NOTICES.md) for source and license details.
 
-The output is `release/Venor-0.1.0-win64.zip`, containing the app, required runtime
+The output is `release/Venor-0.2.0-win64.zip`, containing the app, required runtime
 libraries/plugins, sample target, tests, licenses, application/decoder source and
 available local verification evidence. The verification script runs the packaged
 tests and checks native startup with developer Qt/compiler directories removed
@@ -197,6 +288,18 @@ extracted package folder:
 ./debugger_tests.exe (Resolve-Path ./benign_target.exe)
 $env:QT_QPA_PLATFORM = "offscreen"
 ./gui_tests.exe (Resolve-Path ./benign_target.exe)
+./ai_tests.exe
+./ai_gui_tests.exe (Resolve-Path ./benign_target.exe)
+```
+
+The real local-model check is opt-in and skipped by default. With a local model
+already installed and its server running, run it from the package folder:
+
+```powershell
+$env:QT_QPA_PLATFORM = "windows"
+$env:VENOR_LIVE_LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1"
+$env:VENOR_LIVE_LOCAL_MODEL = "your-installed-model-id"
+./ai_gui_tests.exe (Resolve-Path ./benign_target.exe) realLocalModel
 ```
 
 For native GUI captures, set `QT_QPA_PLATFORM=windows` and `VENOR_QA_CAPTURES` to

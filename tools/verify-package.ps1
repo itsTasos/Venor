@@ -1,7 +1,8 @@
-param([string]$Package = "release/Venor-0.1.0-win64")
+param([string]$Package = "release/Venor-0.2.0-win64")
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
-$packagePath = (Resolve-Path (Join-Path $root $Package)).Path
+$packageInput = if ([System.IO.Path]::IsPathRooted($Package)) { $Package } else { Join-Path $root $Package }
+$packagePath = (Resolve-Path -LiteralPath $packageInput).Path
 $oldPath = $env:PATH
 $oldPlatform = $env:QT_QPA_PLATFORM
 $oldPlugins = $env:QT_PLUGIN_PATH
@@ -21,6 +22,10 @@ try {
     if ($LASTEXITCODE -ne 0) { Get-Content debugger-results.txt; throw "Packaged live debugger tests failed" }
     & "$packagePath/gui_tests.exe" $target
     if ($LASTEXITCODE -ne 0) { Get-Content gui-results.txt; throw "Packaged GUI tests failed" }
+    & "$packagePath/ai_tests.exe"
+    if ($LASTEXITCODE -ne 0) { Get-Content ai-results.txt; throw "Packaged authentication/provider protocol tests failed" }
+    & "$packagePath/ai_gui_tests.exe" $target
+    if ($LASTEXITCODE -ne 0) { Get-Content ai-gui-results.txt; throw "Packaged AI GUI tests failed" }
     $env:QT_QPA_PLATFORM = "windows"
     $process = Start-Process -FilePath "$packagePath/venor.exe" -ArgumentList '--check-runtime' -WindowStyle Hidden -PassThru -Wait
     if ($process.ExitCode -ne 0) { throw "Packaged application startup failed: $($process.ExitCode)" }
@@ -31,8 +36,9 @@ try {
 Same Windows 11 host; not a clean virtual machine.
 PATH=$env:PATH
 QT_PLUGIN_PATH cleared; QT_SCALE_FACTOR cleared.
-Core, real debugger and offscreen GUI tests returned 0.
-Packaged venor.exe --check-runtime with native Windows Qt/SQLite backend returned 0.
+Core, real debugger, offscreen GUI and AI authentication/provider/GUI protocol tests returned 0.
+AI tests use synthetic accounts and a labelled local HTTP fixture, not live ChatGPT or local model inference.
+Packaged venor.exe --check-runtime with native Windows Qt/SQLite/Schannel TLS backend returned 0.
 "@
     Write-Output "Packaged tests and native startup passed with developer tools removed from PATH."
 } finally {
